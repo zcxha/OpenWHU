@@ -1,0 +1,506 @@
+name: Release updated course archives
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "专业课/**"
+      - "公共必修/**"
+      - "公共必修课/**"
+      - "公共选修/**"
+      - "公共选修课/**"
+
+  workflow_dispatch:
+    inputs:
+      full:
+        description: "是否全量重建所有课程压缩包"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-updated-courses
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Package updated courses
+    runs-on: ubuntu-latest
+
+    env:
+      RELEASE_TAG: courses-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed courses
+        id: detect
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          FULL_REBUILD: ${{ github.event.inputs.full || 'false' }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p dist
+          : > changed_courses.txt
+
+          echo "event_name=$EVENT_NAME"
+          echo "full_rebuild=$FULL_REBUILD"
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$FULL_REBUILD" = "true" ]; then
+          echo "Full rebuild mode."
+
+          python3 > changed_courses.txt <<'PY'
+          from pathlib import Path
+
+          categories = [
+              "专业课",
+              "公共必修",
+              "公共必修课",
+              "公共选修",
+              "公共选修课",
+          ]
+
+          courses = []
+
+          for category in categories:
+              category_path = Path(category)
+              if not category_path.is_dir():
+                  continue
+
+              for course_path in sorted(category_path.iterdir(), key=lambda p: p.name):
+                  if course_path.is_dir():
+                      courses.append(str(course_path))
+
+          for course in courses:
+              print(course)
+          PY
+
+          else
+          echo "Incremental rebuild mode."
+
+          HEAD="$HEAD_SHA"
+          BEFORE="${BEFORE_SHA:-}"
+
+          if [ -z "$BEFORE" ] || [[ "$BEFORE" =~ ^0+$ ]] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+          BASE="$(git rev-parse "$HEAD^" 2>/dev/null || git rev-list --max-parents=0 "$HEAD")"
+          else
+          BASE="$BEFORE"
+          fi
+
+          echo "base=$BASE"
+          echo "head=$HEAD"
+
+          git diff --name-only --diff-filter=ACDMRT "$BASE" "$HEAD" > changed_files.txt
+
+          python3 > changed_courses.txt <<'PY'
+          from pathlib import Path
+
+          categories = {
+              "专业课",
+              "公共必修",
+              "公共必修课",
+              "公共选修",
+              "公共选修课",
+          }
+
+          courses = set()
+
+          with open("changed_files.txt", "r", encoding="utf-8") as f:
+              for line in f:
+                  path = line.strip()
+                  if not path:
+                      continue
+
+                  parts = Path(path).parts
+
+                  if len(parts) < 2:
+                      continue
+
+                  category = parts[0]
+                  course = parts[1]
+
+                  if category not in categories:
+                      continue
+
+                  courses.add(str(Path(category) / course))
+
+          for course in sorted(courses):
+              print(course)
+          PY
+
+          fi
+
+          echo "Changed courses:"
+          cat changed_courses.txt || true
+
+          if [ ! -s changed_courses.txt ]; then
+          echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          else
+          echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$FULL_REBUILD" = "true" ]; then
+          echo "full_rebuild=true" >> "$GITHUB_OUTPUT"
+          else
+          echo "full_rebuild=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Resolve English slugs
+        id: slugs
+        if: steps.detect.outputs.has_changes == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          # 从 Release 下载已有的 slug 映射（首次不存在则为空）。
+          # 映射存为 Release 资产 course-slugs.json，纯 ASCII，不受资产名净化影响。
+          rm -f course-slugs.json
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release download "$RELEASE_TAG" --pattern course-slugs.json --dir . --clobber 2>/dev/null || true
+          fi
+          [ -f course-slugs.json ] || echo '{}' > course-slugs.json
+
+          python3 <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import sys
+          import urllib.request
+          from pathlib import Path
+
+          MAP_PATH = Path("course-slugs.json")          # 持久映射：课程路径 -> 英文 slug
+          RUN_MAP_PATH = Path("slug_map.json")          # 本次需打包课程的子集
+
+          api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+
+          try:
+              slug_map = json.loads(MAP_PATH.read_text(encoding="utf-8")) or {}
+          except Exception:
+              slug_map = {}
+
+          used = set(slug_map.values())
+
+          courses = [
+              line.strip()
+              for line in Path("changed_courses.txt").read_text(encoding="utf-8").splitlines()
+              if line.strip()
+          ]
+
+          def sanitize_slug(text: str) -> str:
+              text = text.strip()
+              # 先把编程语言符号转成可读单词，否则 #、++ 会被当特殊字符抹掉，
+              # 导致 数据结构（C）/（C#）/（C++）净化后同名、只能靠哈希区分。
+              text = re.sub(r"(?i)c\+\+", "Cpp", text)
+              text = re.sub(r"(?i)c#", "CSharp", text)
+              text = re.sub(r"(?i)f#", "FSharp", text)
+              text = re.sub(r"(?i)\.net", "DotNet", text)
+              text = text.replace("#", "Sharp").replace("++", "PlusPlus")
+              # 只保留 GitHub 资产名允许的字符 [A-Za-z0-9._-]，其余折叠成下划线
+              text = re.sub(r"[^A-Za-z0-9]+", "_", text)
+              text = re.sub(r"_+", "_", text).strip("._")
+              return text[:80]
+
+          def short_hash(text: str, n: int = 6) -> str:
+              return hashlib.sha1(text.encode("utf-8")).hexdigest()[:n]
+
+          def is_ascii_simple(text: str) -> bool:
+              # 课名本就是 ASCII（如 Matlab）时直接用，省一次 API
+              return bool(re.fullmatch(r"[A-Za-z0-9 ._\-+()]+", text))
+
+          def translate(name: str) -> str:
+              if not api_key:
+                  return ""
+              payload = json.dumps({
+                  "model": "deepseek-chat",
+                  "messages": [
+                      {"role": "system", "content": (
+                          "You translate Chinese university (Wuhan University) course names into concise English. "
+                          "Reply with ONLY the English course name in Title Case, no quotes, no explanation, no trailing punctuation. "
+                          "ALWAYS preserve any parenthetical qualifier and keep it in parentheses in the output, because it tells which "
+                          "school/department, campus, programming language, or class type the materials belong to. "
+                          "Your reply must use ONLY ASCII letters, digits and spaces, because GitHub release asset "
+                          "names allow only [A-Za-z0-9._-] and silently drop everything else. Render programming-language "
+                          "symbols as ASCII words: C# as CSharp, C++ as Cpp, F# as FSharp, .NET as DotNet; plain C stays C; "
+                          "Java and Python unchanged. "
+                          "Translate these Wuhan University school abbreviations using this glossary: "
+                          "计院 = CS School; 网安/网安院 = Cyber Science School; 电信院/電信 = Electronic Info School; "
+                          "新传院 = Journalism School; 信息安全 = Information Security; 快班 = Fast Track; 慢班 = Slow Track. "
+                          "Example: 算法设计与分析(计院) -> Algorithm Design and Analysis (CS School); "
+                          "数据结构（C#） -> Data Structures (CSharp)."
+                      )},
+                      {"role": "user", "content": name},
+                  ],
+                  "temperature": 0,
+                  "stream": False,
+              }).encode("utf-8")
+              req = urllib.request.Request(
+                  "https://api.deepseek.com/chat/completions",
+                  data=payload,
+                  headers={
+                      "Authorization": f"Bearer {api_key}",
+                      "Content-Type": "application/json",
+                  },
+                  method="POST",
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as resp:
+                      data = json.loads(resp.read().decode("utf-8"))
+                  return data["choices"][0]["message"]["content"].strip()
+              except Exception as exc:  # 翻译失败不阻断整个发布，回退到哈希名
+                  print(f"translate failed for {name!r}: {exc}", file=sys.stderr)
+                  return ""
+
+          def assign_slug(course_path: str) -> str:
+              name = course_path.split("/", 1)[1] if "/" in course_path else course_path
+
+              if is_ascii_simple(name):
+                  base = sanitize_slug(name)
+              else:
+                  base = sanitize_slug(translate(name))
+
+              if not base:
+                  base = "course_" + short_hash(course_path, 8)
+
+              candidate = base
+              # 不同课程译名/净化后撞车时，用课程路径哈希保证唯一，绝不再 clobber
+              while candidate in used:
+                  candidate = f"{base}_{short_hash(course_path + candidate)}"
+              return candidate
+
+          run_map = {}
+          changed = False
+
+          for course in courses:
+              if course in slug_map:
+                  run_map[course] = slug_map[course]
+                  continue
+              slug = assign_slug(course)
+              slug_map[course] = slug
+              used.add(slug)
+              run_map[course] = slug
+              changed = True
+              print(f"resolved {course} -> {slug}")
+
+          RUN_MAP_PATH.write_text(
+              json.dumps(run_map, ensure_ascii=False, indent=2),
+              encoding="utf-8",
+          )
+          MAP_PATH.write_text(
+              json.dumps(slug_map, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+
+          print(f"this run: {len(run_map)} course(s); map total: {len(slug_map)}; map_changed={changed}")
+          PY
+
+      - name: Package changed courses
+        if: steps.detect.outputs.has_changes == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 <<'PY'
+          import json
+          import zipfile
+          from pathlib import Path
+
+          dist = Path("dist")
+          dist.mkdir(exist_ok=True)
+
+          exclude_files = {".DS_Store", "Thumbs.db"}
+          exclude_dirs = {".git", "__MACOSX"}
+
+          run_map = json.loads(Path("slug_map.json").read_text(encoding="utf-8"))
+
+          created = 0
+
+          for course, slug in run_map.items():
+              course_path = Path(course)
+
+              if not course_path.is_dir():
+                  print(f"skip deleted course: {course}")
+                  continue
+
+              zip_path = dist / f"{slug}.zip"
+
+              if zip_path.exists():
+                  zip_path.unlink()
+
+              with zipfile.ZipFile(
+                  zip_path,
+                  "w",
+                  compression=zipfile.ZIP_DEFLATED,
+                  compresslevel=6,
+                  allowZip64=True,
+              ) as zf:
+                  for item in sorted(course_path.rglob("*")):
+                      if not item.is_file():
+                          continue
+                      if item.name in exclude_files:
+                          continue
+                      if any(part in exclude_dirs for part in item.parts):
+                          continue
+                      # zip 内部保留原始中文路径，仅外部资产名用英文 slug
+                      arcname = item.relative_to(Path("."))
+                      zf.write(item, arcname.as_posix())
+
+              print(f"created {zip_path}")
+              created += 1
+
+          print(f"created {created} archive(s)")
+          PY
+
+          echo "Archives:"
+          python3 <<'PY'
+          from pathlib import Path
+
+          for file in sorted(Path("dist").glob("*.zip")):
+              print(file)
+          PY
+
+      - name: Build manifest
+        if: steps.detect.outputs.has_changes == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 <<'PY'
+          import json
+          from pathlib import Path
+
+          dist = Path("dist")
+          dist.mkdir(exist_ok=True)
+
+          slug_map = json.loads(Path("course-slugs.json").read_text(encoding="utf-8"))
+
+          courses = []
+          for path, slug in sorted(slug_map.items()):
+              parts = path.split("/")
+              courses.append({
+                  "asset": f"{slug}.zip",
+                  "path": path,
+                  "category": parts[0] if parts else "",
+                  "name": parts[1] if len(parts) > 1 else path,
+              })
+
+          (dist / "manifest.json").write_text(
+              json.dumps({"courses": courses}, ensure_ascii=False, indent=2),
+              encoding="utf-8",
+          )
+          print(f"manifest entries: {len(courses)}")
+          PY
+
+      - name: Check archive size
+        if: steps.detect.outputs.has_changes == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          limit_mib = 1900
+          too_large = False
+
+          for file in sorted(Path("dist").glob("*.zip")):
+              size_bytes = file.stat().st_size
+              size_mib = size_bytes / 1024 / 1024
+
+              print(f"{file}: {size_mib:.2f} MiB")
+
+              if size_mib > limit_mib:
+                  print(f"Archive is too large: {file}")
+                  too_large = True
+
+          if too_large:
+              raise SystemExit("Some archives are too large.")
+          PY
+
+      - name: Create release if missing
+        if: steps.detect.outputs.has_changes == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+          echo "Release already exists: $RELEASE_TAG"
+          else
+          gh release create "$RELEASE_TAG" \
+            --title "课程资料压缩包" \
+            --notes "自动生成课程压缩包。资产名为英文（见 manifest.json 对应中文课名）。首次可全量生成，后续只更新发生变化的课程。"
+          fi
+
+      - name: Reset stale assets on full rebuild
+        if: steps.detect.outputs.has_changes == 'true' && steps.detect.outputs.full_rebuild == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          echo "Full rebuild: clearing existing release assets (keeping map/manifest)."
+          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' 2>/dev/null \
+          | while IFS= read -r asset; do
+              [ -z "$asset" ] && continue
+              case "$asset" in
+                course-slugs.json|manifest.json) continue ;;
+              esac
+              echo "deleting stale asset: $asset"
+              gh release delete-asset "$RELEASE_TAG" -y -- "$asset" || true
+            done
+
+      - name: Upload archives and metadata
+        if: steps.detect.outputs.has_changes == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          python3 <<'PY'
+          import os
+          import subprocess
+          import time
+          from pathlib import Path
+
+          release_tag = os.environ["RELEASE_TAG"]
+
+          files = sorted(Path("dist").glob("*.zip"))
+          files.append(Path("dist/manifest.json"))
+          files.append(Path("course-slugs.json"))
+
+          uploaded = 0
+          for file in files:
+              if not file.exists():
+                  print(f"skip missing: {file}")
+                  continue
+              print(f"Uploading: {file}")
+              subprocess.run(
+                  ["gh", "release", "upload", release_tag, str(file), "--clobber"],
+                  check=True,
+              )
+              uploaded += 1
+              time.sleep(1)
+
+          print(f"Uploaded {uploaded} file(s).")
+          PY

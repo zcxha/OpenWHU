@@ -1,8 +1,34 @@
 # [WHU课代表计划 - 武汉大学课程资料整理](https://openwhu.github.io/)
 
-## 融合|Merge
+## WHU友链 | Friend Links
 
-OpenWHU 致力于营造一个更加活跃，有更多贡献者参与的社区。OpenWHU 将会为 [WHUCAO](https://github.com/WHUCodingAndOpen) 提供资料储备，并与之进行融合，以创造一个更加积极活跃的社区。同时，这也意味着社区将会有更多交流、贡献和知识分享的空间，让同学们能够更快、更好地接触大学生活，接触每一门新的课程！
+<ul>
+<li>
+<img src="https://www.whu.sb/favicon.ico" width="16">
+<a href="https://www.whu.sb/"><strong>WHU.sb</strong></a><br>
+<span>发现最好的课程，分享你的学习体验</span>
+</li>
+
+<li>
+<img src="https://avatars.githubusercontent.com/u/131381256?s=200&v=4" width="16">
+<a href="https://github.com/WHUCodingAndOpen"><strong>WHUCAO</strong></a><br>
+<span>武大编程交流与开源社区</span>
+</li>
+</ul>
+
+## 友链|Related Works
+
+- [华中科技大学研究生课程资料](https://github.com/lyandut/HUST-Invictus)
+- [CityU GuideBook](https://penjc.github.io/CityU/)  A comprehensive platform for CityUHK students.
+- [浙江大学课程攻略共享计划](https://github.com/QSCTech/zju-icicles)
+- [气垫船计划——免费、去中心化的北京大学往年题资料库](https://github.com/martinwu42/project-hover)
+- [北京大学信科学生会学术部资料库](https://github.com/EECS-PKU-XSB/Shared-learning-materials)
+- [北大计算机课程大作业](https://github.com/tongtzeho/PKUCourse)
+- [清华大学计算机系课程攻略](https://github.com/Trinkle23897/thu-cst-cracker)
+- [东南大学课程共享计划](https://github.com/zjdx1998/seucourseshare)
+- [中国科学技术大学计算机学院课程资源](https://github.com/USTC-Resource/USTC-Course)
+- [上海交通大学课程资料分享](https://github.com/CoolPhilChen/SJTU-Courses/)
+- [北京大学课程资料分享](https://github.com/lib-pku)
 
 ## 前言|Preface
 
@@ -136,15 +162,6 @@ https://github.com/openwhu/OpenWHU/issues/71
 
 **Together We Can Make WHU A Better Place**
 
-
-## 官网|Website
-
-更多详情请见官网: [https://openwhu.github.io](https://openwhu.github.io/)
-
-See the website for more details: [https://openwhu.github.io](https://openwhu.github.io/)
-
-<img src="https://raw.githubusercontent.com/openwhu/OpenWHU/master/img/OpenWHU.png">
-
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=openwhu/OpenWHU&type=date&legend=bottom-right)](https://www.star-history.com/#openwhu/OpenWHU&type=date&legend=bottom-right)
+[![Star History Chart](https://star-history.dera.page/svg?repos=openwhu/OpenWHU&type=date&legend=bottom-right)](https://star-history.dera.page/#openwhu/OpenWHU&type=date&legend=bottom-right)
